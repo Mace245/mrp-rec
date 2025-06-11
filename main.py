@@ -8,6 +8,7 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from antares_http import antares # Keep for Antares API
+from zoneinfo import ZoneInfo
 
 # --- Configuration ---
 ANTARES_ACCESS_KEY = 'fe5c7a15d8c13220:bfd764392a99a094' # Your Antares Key
@@ -101,11 +102,14 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
 
 def background_ntp_checker():
     print("Background NTP Checker started...")
+    jakarta_tz = ZoneInfo('Asia/Jakarta')
     while True:
         current_ntp_time_utc = get_ntp_time(NTP_SERVER)
         if current_ntp_time_utc is not None:
-            fetch_and_store_hourly_data(target_hour_dt_utc=current_ntp_time_utc)
-        time.sleep(CHECK_INTERVAL_SECONDS)
+            current_time_jakarta = current_ntp_time_utc.astimezone(jakarta_tz)
+            # Now you can use the Jakarta time to fetch data
+            fetch_and_store_hourly_data(target_hour_dt_utc=current_time_jakarta)
+            time.sleep(CHECK_INTERVAL_SECONDS)
 
 # --- Refactored Web Routes ---
 
