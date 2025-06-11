@@ -27,6 +27,7 @@ app.jinja_env.globals['now'] = datetime.utcnow # For footer timestamp
 class dbReading(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     DateTime = db.Column(db.String(19), nullable=False, unique=True, index=True)
+    DailyEnergy = db.Column(db.Float) 
     Power = db.Column(db.Float, nullable=True)
     Ampere = db.Column(db.Float, nullable=True)
     Voltage = db.Column(db.Float, nullable=True)
@@ -83,6 +84,7 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
             
             new_reading = dbReading(
                 DateTime=formatted_ts,
+                DailyEnergy=content.get('DailyEnergy'),
                 Power=content.get('Power'),
                 Ampere=content.get('Current'),
                 Voltage=content.get('Voltage'),
@@ -109,6 +111,7 @@ def background_ntp_checker():
 
 # Dictionary to map URL metric names to database columns and units
 METRIC_CONFIG = {
+    'daily_energy': {'column': dbReading.DailyEnergy, 'unit': 'Wh'},
     'power': {'column': dbReading.Power, 'unit': 'W'},
     'ampere': {'column': dbReading.Ampere, 'unit': 'A'},
     'voltage': {'column': dbReading.Voltage, 'unit': 'V'},
