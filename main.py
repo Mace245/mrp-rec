@@ -58,7 +58,7 @@ def create_app():
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     
     # Use Railway's PostgreSQL DB if available, otherwise use local SQLite file
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url or f'sqlite:///{DATABASE_FILE}'
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     # Connect the SQLAlchemy object to the configured app
