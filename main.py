@@ -19,7 +19,15 @@ CHECK_INTERVAL_SECONDS = 15 # How often to check for new hour
 NTP_SERVER = 'pool.ntp.org' # For reliable time checks
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_FILE}'
+# Get the database URL from the environment variable provided by Railway
+database_url = os.getenv('DATABASE_URL')
+
+# A small but important fix: SQLAlchemy expects 'postgresql://' but Railway provides 'postgres://'
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+# Use the Railway database URL if it exists, otherwise fall back to the local SQLite file
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url or f'sqlite:///{DATABASE_FILE}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 app.jinja_env.globals['now'] = datetime.utcnow # For footer timestamp
