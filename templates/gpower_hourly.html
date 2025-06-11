@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+            height: 90vh;
+            width: 95%;
+            margin-top: 20px;
+        }
+        .controls { margin-bottom: 20px; }
+        .table-responsive {overflow-y: auto; margin-top: 30px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center controls gy-2 gx-3 align-items-center">
+            <div class="col-auto d-flex align-items-center"> 
+                <label for="startDate" class="form-label me-2 mb-0">Start:</label>
+                <input type="date" class="form-control" id="startDate"> 
+            </div>
+            <div class="col-auto d-flex align-items-center">
+                <label for="endDate" class="form-label me-2 mb-0">End:</label>
+                <input type="date" class="form-control" id="endDate">
+            </div>
+            <div class="col-auto align-self-end">
+                <button id="updateButton" class="btn btn-primary">Update Chart</button>
+            </div>
+        </div>
+         <div id="errorMessage" class="alert alert-danger mt-2" style="display: none;" role="alert"></div>
+
+        <div class="chart-container mx-auto">
+            <canvas id="powerChart"></canvas> 
+        </div>
+    </div> 
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const ctxPower = document.getElementById('powerChart').getContext('2d');
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+        const updateButton = document.getElementById('updateButton');
+        const errorMessageDiv = document.getElementById('errorMessage');
+
+        let powerChart;
+
+        function formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+        function showError(message) { errorMessageDiv.textContent = message; errorMessageDiv.style.display = 'block'; }
+        function hideError() { errorMessageDiv.style.display = 'none'; errorMessageDiv.textContent = ''; }
+
+        async function updateChartWithRange(startDate, endDate) {
+            hideError();
+            const url = `/get_range_data?start_date=${startDate}&end_date=${endDate}`;
+            console.log("Fetching power data from:", url);
+
+            try {
+                const response = await fetch(url);
+                const responseData = await response.json();
+                if (!response.ok) throw new Error(responseData.error || `HTTP error! Status: ${response.status}`);
+
+                const chartData = responseData; 
+                
+                const dailyPower = {}; // Object to store power per date: { 'YYYY-MM-DD': maxEnergy }
+
+                for (let i = 0; i < responseData.labels.length; i++) {
+                    const timestamp = responseData.labels[i];
+                    const power = responseData.powerData[i];
+
+                    const datePart = timestamp.substring(11, 16); // Extract "YYYY-MM-DD"
+                    dailyPower[datePart] = power;
+                }
+                console.log("Processed daily maximums:", dailyPower);
+
+                const sortedDates = Object.keys(dailyPower).sort();
+
+                const dailyLabels = sortedDates;
+                const dailyValues = sortedDates.map(date => dailyPower[date]);
+
+                if (dailyLabels.length === 0) {
+                    console.warn("No valid daily data found to display.");
+                    if (powerChart) {
+                        powerChart.data.labels = [];
+                        powerChart.data.datasets[0].data = [];
+                        powerChart.update();
+                    }
+                    showError("No data available for the selected range after processing."); 
+                    return;
+                }
+
+                // --- Update Chart ---
+                if (powerChart) {
+                    powerChart.data.labels = chartData.labels;
+                     if (powerChart.data.datasets && powerChart.data.datasets.length > 0) {
+                         powerChart.data.datasets[0].data = chartData.powerData; 
+                    }
+                    powerChart.update();
+                    console.log("Power chart updated.");
+                } else {
+                    powerChart = new Chart(ctxPower, {
+                        type: 'line',
+                        data: {
+                            labels: dailyLabels,
+                            datasets: [{
+                                label: 'Power (W)',      
+                                data: dailyValues,    
+                                borderColor: 'rgb(75, 192, 192)', 
+                                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                                tension: 0.1,
+                                fill: false,
+                                spanGaps: true
+                            }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            scales: {
+                                x: { title: { display: true, text: 'DateTime (UTC)' } },
+                                y: { title: { display: true, text: 'Power (W)' }, beginAtZero: true }
+                            }
+                        }
+                    });
+                    console.log("Power chart created.");
+                }
+
+            } catch (error) {
+                console.error('Error fetching/updating power chart:', error);
+                showError(`Failed to load power chart data: ${error.message}`);
+                 if (powerChart) {
+                     powerChart.data.labels = [];
+                     powerChart.data.datasets[0].data = [];
+                     powerChart.update();
+                 }
+            }
+        }
+
+        // --- Event Listeners ---
+        updateButton.addEventListener('click', () => {
+            const start = startDateInput.value;
+            const end = endDateInput.value;
+            if (!start || !end) { showError('Please select both dates.'); return; }
+             if (new Date(start) > new Date(end)) { showError('Start date cannot be after end date.'); return; }
+            updateChartWithRange(start, end);
+        });
+
+        // Initial Load
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date();
+            const todayFormatted = formatDate(today);
+            const minDateAllowed = "2025-04-01";
+
+
+            startDateInput.min = minDateAllowed;
+            startDateInput.max = todayFormatted;
+            endDateInput.min = todayFormatted;
+            endDateInput.max = todayFormatted;
+
+            const defaultStartDate = minDateAllowed;
+            const defaultEndDate = todayFormatted;
+
+            // Ensure default dates respect the new min/max limits
+            startDateInput.value = (new Date(defaultStartDate) >= new Date(minDateAllowed)) ? defaultStartDate : minDateAllowed;
+            endDateInput.value = defaultEndDate;
+
+            startDateInput.value = defaultStartDate;
+            endDateInput.value = defaultEndDate;
+            updateChartWithRange(defaultStartDate, defaultEndDate); // Initial load
+        });
+    </script>
+</body>
+</html>

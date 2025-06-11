@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+            height: 90vh;
+            width: 95%;
+            margin-top: 20px;
+        }
+        .controls { margin-bottom: 20px; }
+        .table-responsive {overflow-y: auto; margin-top: 30px; }
+    </style>
+</head>
+<body>
+    <div class="container"> 
+        <!-- Date Range Selection Controls -->
+        <div class="row justify-content-center controls gy-2 gx-3 align-items-center">
+            <!-- Start Date Group -->
+            <div class="col-auto d-flex align-items-center"> 
+                <label for="startDate" class="form-label me-2 mb-0">Start:</label>
+                <input type="date" class="form-control" id="startDate"> 
+            </div>
+            <div class="col-auto d-flex align-items-center">
+                <label for="endDate" class="form-label me-2 mb-0">End:</label>
+                <input type="date" class="form-control" id="endDate">
+            </div>
+            <div class="col-auto align-self-end">
+                <button id="updateButton" class="btn btn-primary">Update Chart</button>
+            </div>
+        </div>
+         <div id="errorMessage" class="alert alert-danger mt-2" style="display: none;" role="alert"></div>
+
+        <!-- Energy Chart Display -->
+        <div class="chart-container">
+            <canvas id="energyChart"></canvas> <!-- Canvas for Energy -->
+        </div>
+    </div> <!-- /container -->
+
+    <!-- Bootstrap JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // --- DOM Elements ---
+        const ctxEnergy = document.getElementById('energyChart').getContext('2d');
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+        const updateButton = document.getElementById('updateButton');
+        const errorMessageDiv = document.getElementById('errorMessage');
+
+        let energyChart; // Holds the chart instance
+
+        // --- Helper Functions ---
+        function formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+        function showError(message) { errorMessageDiv.textContent = message; errorMessageDiv.style.display = 'block'; }
+        function hideError() { errorMessageDiv.style.display = 'none'; errorMessageDiv.textContent = ''; }
+
+        // --- Fetch Data and Update Chart ---
+        async function updateChartWithRange(startDate, endDate) {
+            hideError();
+            const url = `/get_range_data?start_date=${startDate}&end_date=${endDate}`;
+            console.log("Fetching energy data from:", url);
+
+            try {
+                const response = await fetch(url);
+                const responseData = await response.json();
+                if (!response.ok) throw new Error(responseData.error || `HTTP error! Status: ${response.status}`);
+
+                const chartData = responseData; // Contains labels, energyData, powerData
+
+                const dailyMaxEnergy = {}; // Object to store max energy per date: { 'YYYY-MM-DD': maxEnergy }
+
+                for (let i = 0; i < responseData.labels.length; i++) {
+                    const timestamp = responseData.labels[i];
+                    const energy = responseData.energyData[i];
+
+                    const datePart = timestamp.substring(11, 16); // Extract "YYYY-MM-DD"
+
+                    dailyMaxEnergy[datePart] = energy;
+                }
+                console.log("Processed daily maximums:", dailyMaxEnergy);
+
+
+                // --- Prepare Data for Chart.js (Sorted) ---
+                // 1. Get date keys and sort them
+                const sortedDates = Object.keys(dailyMaxEnergy).sort(); // Sort dates chronologically
+
+                // 2. Create arrays for labels and data based on the sorted dates
+                const dailyLabels = sortedDates;
+                const dailyMaxValues = sortedDates.map(date => dailyMaxEnergy[date]);
+
+                if (dailyLabels.length === 0) {
+                    console.warn("No valid daily data found to display.");
+                    // Optionally clear the chart or show a message
+                    if (energyChart) {
+                        energyChart.data.labels = [];
+                        energyChart.data.datasets[0].data = [];
+                        energyChart.update();
+                    }
+                    showError("No data available for the selected range after processing."); // Assuming showError exists
+                    return; // Stop further processing
+                }
+
+                
+                // --- Update Chart ---
+                if (energyChart) {
+                    energyChart.data.labels = chartData.labels;
+                    if (energyChart.data.datasets && energyChart.data.datasets.length > 0) {
+                         energyChart.data.datasets[0].data = chartData.energyData; // *** USE energyData ***
+                    }
+                    energyChart.update();
+                    console.log("Energy chart updated.");
+                } else {
+                    energyChart = new Chart(ctxEnergy, {
+                        type: 'line',
+                        data: {
+                            labels: dailyLabels,
+                            datasets: [{
+                                label: 'Daily Energy (Wh)', // *** CHART LABEL ***
+                                data: dailyMaxValues,   // *** USE energyData ***
+                                borderColor: 'rgb(255, 99, 132)', // Different color
+                                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                                tension: 0.1,
+                                fill: false,
+                                spanGaps: true
+                            }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            scales: {
+                                x: { title: { display: true, text: 'Waktu (UTC)' } },
+                                y: { title: { display: true, text: 'Energi (Wh)' }, beginAtZero: true } // *** Y-AXIS LABEL ***
+                            },
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            }
+                        }
+                    });
+                    console.log("Energy chart created.");
+                }
+
+            } catch (error) {
+                console.error('Error fetching/updating energy chart:', error);
+                showError(`Failed to load energy chart data: ${error.message}`);
+                 if (energyChart) { // Clear chart on error
+                     energyChart.data.labels = [];
+                     energyChart.data.datasets[0].data = [];
+                     energyChart.update();
+                 }
+            }
+        }
+
+        // --- Event Listeners ---
+        updateButton.addEventListener('click', () => {
+            const start = startDateInput.value;
+            const end = endDateInput.value;
+            if (!start || !end) { showError('Please select both dates.'); return; }
+            if (new Date(start) > new Date(end)) { showError('Start date cannot be after end date.'); return; }
+            updateChartWithRange(start, end);
+        });
+
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date();
+            const todayFormatted = formatDate(today);
+            const minDateAllowed = "2025-04-01";
+
+
+            startDateInput.min = minDateAllowed;
+            startDateInput.max = todayFormatted;
+            endDateInput.min = minDateAllowed;
+            endDateInput.max = todayFormatted;
+
+            const defaultStartDate = minDateAllowed;
+            const defaultEndDate = todayFormatted;
+
+            // Ensure default dates respect the new min/max limits
+            startDateInput.value = (new Date(defaultStartDate) >= new Date(minDateAllowed)) ? defaultStartDate : minDateAllowed;
+            endDateInput.value = defaultEndDate;
+
+            startDateInput.value = defaultStartDate;
+            endDateInput.value = defaultEndDate;
+            updateChartWithRange(defaultStartDate, defaultEndDate); // Initial load
+        });
+    </script>
+</body>
+</html>

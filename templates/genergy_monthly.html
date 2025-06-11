@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Monthly Energy Graph</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 960px; }
+        .chart-container {
+            position: relative;
+            height: 70vh; /* Made chart taller to fill space */
+            width: 100%;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="card-body">
+            <div class="chart-container">
+                <canvas id="monthlyChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const rawData = {{ readings | tojson | safe }};
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Get the context for the chart
+            const ctx = document.getElementById('monthlyChart').getContext('2d');
+            
+            // --- Helper function to display messages on the canvas ---
+            function showCanvasMessage(message) {
+                ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); // Clear previous drawings
+                ctx.font = '20px Arial';
+                ctx.fillStyle = '#6c757d';
+                ctx.textAlign = 'center';
+                ctx.fillText(message, ctx.canvas.width / 2, ctx.canvas.height / 2);
+            }
+
+            if (!rawData || rawData.length < 2) {
+                showCanvasMessage('Not enough data to generate a graph.');
+                return;
+            }
+
+            // --- 1. Calculate Monthly Totals (Same logic as before) ---
+            const monthlyWattSeconds = {};
+            for (let i = 1; i < rawData.length; i++) {
+                const r1 = rawData[i-1];
+                const r2 = rawData[i];
+                if (r1.Power === null || r2.Power === null) continue;
+                const t1 = new Date(r1.DateTime);
+                const t2 = new Date(r2.DateTime);
+                if (isNaN(t1.getTime()) || isNaN(t2.getTime())) continue;
+                const timeDiffSeconds = (t2.getTime() - t1.getTime()) / 1000;
+                if (timeDiffSeconds <= 0) continue;
+                const avgPowerWatts = (r1.Power + r2.Power) / 2;
+                const wattSeconds = avgPowerWatts * timeDiffSeconds;
+                const year = t2.getFullYear();
+                const month = String(t2.getMonth() + 1).padStart(2, '0');
+                const monthKey = `${year}-${month}`;
+                monthlyWattSeconds[monthKey] = (monthlyWattSeconds[monthKey] || 0) + wattSeconds;
+            }
+
+            const summaryData = Object.keys(monthlyWattSeconds).map(month => {
+                const totalKwh = monthlyWattSeconds[month] / (1000 * 3600);
+                return { month: month, kwh: totalKwh };
+            });
+            summaryData.sort((a, b) => a.month.localeCompare(b.month)); // Sort oldest to newest for the graph
+
+            // --- 2. Check for data and prepare for chart ---
+            if (summaryData.length === 0) {
+                 showCanvasMessage('No valid monthly data could be calculated.');
+                 return; // Stop if there's nothing to plot
+            }
+            
+            const chartLabels = summaryData.map(d => d.month);
+            const chartValues = summaryData.map(d => d.kwh.toFixed(2));
+
+            // --- 3. Create the Chart ---
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartLabels,
+                    datasets: [{
+                            type: 'line',
+                            label: 'Energi (Wh)',
+                            data: chartValues,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            tension: 0.1,
+                            fill: false
+                        }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { title: { display: true, text: 'Bulan' } },
+                        y: { title: { display: true, text: 'Energi (Wh)' }, beginAtZero: true }
+                    },
+                    plugins: {
+                        title: { display: false, text: 'Monthly Energy Consumption (kWh)' },
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

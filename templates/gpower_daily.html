@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+            height: 80vh; /* Adjusted height slightly */
+            width: 95%;
+            margin-top: 20px;
+        }
+        .controls { margin-bottom: 10px; }
+        #totalEnergyStat { font-weight: 500; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Month Selection Controls -->
+        <div class="row justify-content-center controls gy-2 gx-3 align-items-center mt-3">
+            <div class="col-auto d-flex align-items-center">
+                <label for="monthPicker" class="form-label me-2 mb-0">Pilih Bulan:</label>
+                <input type="month" class="form-control" id="monthPicker">
+            </div>
+            <div class="col-auto align-self-end">
+                <button id="updateButton" class="btn btn-primary">Update</button>
+            </div>
+        </div>
+
+        <!-- Total Energy Statistic Display -->
+        <div id="totalEnergyStat" class="text-center fs-4 mt-3 mb-2" role="status" aria-live="polite"></div>
+        
+        <!-- Error Message Display -->
+        <div id="errorMessage" class="alert alert-danger" style="display: none;" role="alert"></div>
+
+        <!-- Chart Display -->
+        <div class="chart-container mx-auto">
+            <canvas id="powerChart"></canvas>
+        </div>
+    </div> <!-- /container -->
+
+    <!-- Bootstrap JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // --- DOM Elements ---
+        const ctxPower = document.getElementById('powerChart').getContext('2d');
+        const monthPicker = document.getElementById('monthPicker');
+        const updateButton = document.getElementById('updateButton');
+        const errorMessageDiv = document.getElementById('errorMessage');
+        const totalEnergyStat = document.getElementById('totalEnergyStat');
+
+        let powerChart; // Holds the chart instance
+
+        // --- Helper Functions ---
+        function showError(message) { errorMessageDiv.textContent = message; errorMessageDiv.style.display = 'block'; }
+        function hideError() { errorMessageDiv.style.display = 'none'; errorMessageDiv.textContent = ''; }
+
+        /**
+         * Calculates total energy consumed in kWh from power data points.
+         * Uses the trapezoidal rule for more accurate numerical integration.
+         * Energy (kWh) = Sum of [ (Power1 + Power2)/2 * (Time2 - Time1) ] / (1000 * 3600)
+         * @param {string[]} timestamps - Array of ISO 8601 date strings.
+         * @param {number[]} powerValues - Array of power readings in Watts.
+         * @returns {number} - Total energy in kWh.
+         */
+        function calculateTotalEnergy(timestamps, powerValues) {
+            if (timestamps.length < 2) {
+                return 0; // Not enough data to calculate energy over time
+            }
+
+            let totalWattSeconds = 0;
+            for (let i = 1; i < timestamps.length; i++) {
+                // Basic validation for the data points being used
+                if (typeof powerValues[i] !== 'number' || typeof powerValues[i-1] !== 'number') continue;
+
+                const time1 = new Date(timestamps[i-1]).getTime();
+                const time2 = new Date(timestamps[i]).getTime();
+                
+                if (isNaN(time1) || isNaN(time2)) continue; // Skip if dates are invalid
+
+                const timeDifferenceSeconds = (time2 - time1) / 1000;
+                
+                // Only calculate for positive time differences
+                if (timeDifferenceSeconds <= 0) continue; 
+                
+                const avgPowerWatts = (powerValues[i] + powerValues[i-1]) / 2;
+                totalWattSeconds += avgPowerWatts * timeDifferenceSeconds;
+            }
+
+            const totalKiloWattHours = totalWattSeconds / (1000 * 3600);
+            return totalKiloWattHours;
+        }
+
+        // --- Fetch Data and Update UI ---
+        async function fetchAndDisplayData(monthString) { // e.g., "2024-05"
+            hideError();
+            totalEnergyStat.textContent = ''; // Clear previous stat
+
+            // Calculate start and end dates from the selected month
+            const year = parseInt(monthString.substring(0, 4));
+            const month = parseInt(monthString.substring(5, 7));
+            const startDate = `${monthString}-01`;
+            const lastDayOfMonth = new Date(year, month, 0).getDate();
+            const endDate = `${monthString}-${String(lastDayOfMonth).padStart(2, '0')}`;
+
+            const url = `/get_range_data?start_date=${startDate}&end_date=${endDate}`;
+            console.log("Fetching data for month from:", url);
+
+            try {
+                const response = await fetch(url);
+                const responseData = await response.json();
+                if (!response.ok) throw new Error(responseData.error || `HTTP error! Status: ${response.status}`);
+
+                // Let's assume responseData has { labels: [...], powerData: [...] }
+                const { labels, powerData } = responseData;
+
+                // --- 1. Process Data for Chart: Find Max Power Per Day ---
+                const dailyMaxPower = {}; // { 'YYYY-MM-DD': maxPower }
+                for (let i = 0; i < labels.length; i++) {
+                    const timestamp = labels[i];
+                    const power = powerData[i];
+
+                    if (typeof timestamp !== 'string' || timestamp.length < 10 || typeof power !== 'number') {
+                        console.warn(`Skipping invalid data point:`, { timestamp, power });
+                        continue;
+                    }
+                    const datePart = timestamp.substring(0, 10);
+                    if (!dailyMaxPower[datePart] || power > dailyMaxPower[datePart]) {
+                        dailyMaxPower[datePart] = power;
+                    }
+                }
+
+                // Prepare sorted data for the chart
+                const sortedDates = Object.keys(dailyMaxPower).sort();
+                const chartLabels = sortedDates;
+                const chartValues = sortedDates.map(date => dailyMaxPower[date]);
+                
+                if (chartLabels.length === 0) {
+                     if (powerChart) {
+                        powerChart.data.labels = [];
+                        powerChart.data.datasets[0].data = [];
+                        powerChart.update();
+                    }
+                    showError("No data available for the selected month.");
+                    return;
+                }
+                
+                // --- 2. Calculate Total Energy for the Statistic ---
+                const totalKWh = calculateTotalEnergy(labels, powerData);
+                totalEnergyStat.textContent = `Total Energi Terpakai: ${totalKWh.toFixed(2)} Wh`;
+
+                // --- 3. Update Chart ---
+                if (powerChart) {
+                    powerChart.data.labels = chartLabels;
+                    powerChart.data.datasets[0].data = chartValues;
+                    powerChart.options.scales.x.title.text = `Date in ${monthString}`;
+                    powerChart.update();
+                    console.log("Chart updated for", monthString);
+                } else {
+                    powerChart = new Chart(ctxPower, {
+                        type: 'line',
+                        data: {
+                            labels: chartLabels,
+                            datasets: [{
+                                label: 'Max Power Harian (W)',
+                                data: chartValues,
+                                borderColor: 'rgb(75, 192, 192)',
+                                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                                tension: 0.1,
+                                fill: true,
+                            }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            scales: {
+                                x: { title: { display: false, text: `Date in ${monthString}` } },
+                                y: { title: { display: true, text: 'Power (W)' }, beginAtZero: true }
+                            },
+                            plugins: {
+                                title: { display: true, text: 'Pembacaan Power Harian Maximal' }
+                            }
+                        }
+                    });
+                    console.log("Chart created for", monthString);
+                }
+            } catch (error) {
+                console.error('Error fetching/updating data:', error);
+                showError(`Failed to load data: ${error.message}`);
+                 if (powerChart) { // Clear chart on error
+                     powerChart.data.labels = [];
+                     powerChart.data.datasets[0].data = [];
+                     powerChart.update();
+                 }
+            }
+        }
+
+        // --- Event Listeners ---
+        updateButton.addEventListener('click', () => {
+            const month = monthPicker.value;
+            if (!month) {
+                showError('Please select a month.');
+                return;
+            }
+            fetchAndDisplayData(month);
+        });
+
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date();
+            const minDateAllowed = "2025-04"; // Format: YYYY-MM
+            
+            // Format current month as YYYY-MM
+            const currentYear = today.getFullYear();
+            const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
+            const maxMonthAllowed = `${currentYear}-${currentMonth}`;
+
+            // Set min/max attributes for the month picker
+            monthPicker.min = minDateAllowed;
+            monthPicker.max = maxMonthAllowed;
+
+            // Set default value to the current month and trigger initial data load
+            monthPicker.value = maxMonthAllowed;
+            fetchAndDisplayData(maxMonthAllowed);
+        });
+    </script>
+</body>
+</html>
