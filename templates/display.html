@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        h1, h2 { color: #2c3e50; }
+        nav { background-color: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 25px; }
+        nav ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+        nav ul li a { display: block; padding: 8px 15px; background-color: #fff; color: #2980b9; text-decoration: none; border-radius: 5px; font-weight: 500; transition: background-color 0.2s, color 0.2s; }
+        nav ul li a:hover { background-color: #3498db; color: #fff; }
+        nav ul li a.active { background-color: #2980b9; color: #fff; font-weight: 700; }
+        .chart-container { margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #ecf0f1; font-weight: 600; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        footer { text-align: center; margin-top: 30px; font-size: 0.9em; color: #7f8c8d; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <ul>
+                {% for metric_key in navigation.metrics %}
+                    {% for gran_key in navigation.granularities %}
+                        <li>
+                            <a href="{{ url_for('unified_view', metric=metric_key, granularity=gran_key) }}" 
+                               class="{% if navigation.current_metric == metric_key and navigation.current_granularity == gran_key %}active{% endif %}">
+                                {{ gran_key.capitalize() }} {{ metric_key.replace('_', ' ').title() }}
+                            </a>
+                        </li>
+                    {% endfor %}
+                {% endfor %}
+            </ul>
+        </nav>
+
+        <h2>{{ title }}</h2>
+        
+        <div class="chart-container">
+            <canvas id="dataChart"></canvas>
+        </div>
+
+        <h2>Data Log</h2>
+        <table>
+            <thead>
+                <tr>
+                    {% for header in table_headers %}
+                        <th>{{ header }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in table_rows %}
+                <tr>
+                    <td>{{ row.timestamp }}</td>
+                    <td>{{ row.value }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="{{ table_headers|length }}">No data available.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // Use the 'tojson' filter to safely pass data from Flask to JavaScript
+        const chartLabels = {{ chart_labels|tojson }};
+        const chartData = {{ chart_data|tojson }};
+        const chartUnit = {{ chart_unit|tojson }};
+        const chartTitle = {{ title|tojson }};
+
+        const ctx = document.getElementById('dataChart').getContext('2d');
+        const dataChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [{
+                    label: `${chartTitle} (${chartUnit})`,
+                    data: chartData,
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: `Value (${chartUnit})`
+                        }
+                    },
+                    x: {
+                         title: {
+                            display: true,
+                            text: 'Timestamp'
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
