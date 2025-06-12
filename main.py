@@ -74,6 +74,11 @@ def create_app():
     @app.route('/view/<string:metric>/<string:granularity>')
     def unified_view(metric, granularity):
         if metric not in METRIC_CONFIG or granularity not in ALLOWED_GRANULARITIES:
+            if metric not in METRIC_CONFIG:
+                print(f"Invalid metric: {metric}")
+            
+            if granularity not in ALLOWED_GRANULARITIES:
+                print(f"Invalid granularity: {granularity}")
             return "Error: Invalid metric or granularity specified.", 404
 
         config = METRIC_CONFIG[metric]
