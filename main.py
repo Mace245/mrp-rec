@@ -136,7 +136,7 @@ def background_ntp_checker():
         if current_ntp_time_utc is not None:
             current_time_jakarta = current_ntp_time_utc.astimezone(jakarta_tz)
             # Now you can use the Jakarta time to fetch data
-            fetch_and_store_hourly_data(target_hour_dt_utc=current_time_jakarta)
+            fetch_and_store_hourly_data(target_dt_utc=current_time_jakarta)
             time.sleep(CHECK_INTERVAL_SECONDS)
 
 # --- Refactored Web Routes ---
