@@ -77,15 +77,24 @@ def get_ntp_time(server="pool.ntp.org"):
         if client: client.close()
 
 def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
+    """
+    Fetches the latest data from an Antares device, and stores power readings and 
+    energy consumption in the database for a specific timestamp.
+
+    This function ensures that each operation is part of a single atomic database transaction.
+    """
     with app.app_context():
-        # Store data at the exact interval, not just the top of the hour
+        # Store data at the exact interval, not just the top of the hour.
+        # The timestamp format includes seconds to capture the precise moment.
         formatted_ts = target_hour_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
 
+        # Check if a reading for this exact timestamp already exists to prevent duplicates.
         if dbReading.query.filter_by(DateTime=formatted_ts).first():
-            # print(f"Store: Data for {formatted_ts} UTC already exists. Skipping.")
+            print(f"Data for {formatted_ts} UTC already exists. Skipping.")
             return
 
         try:
+            # --- Step 1: Fetch data from the external API ---
             antares.setAccessKey(ANTARES_ACCESS_KEY)
             latest_data = antares.get(ANTARES_PROJECT_NAME, ANTARES_DEVICE_NAME)
 
@@ -94,14 +103,17 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
                 return
 
             content = latest_data['content']
-
-            if content.get('timestamp'):
-                print('diff format')
-                return
             
+            # This check seems to be for handling a different data format.
+            if content.get('timestamp'):
+                print("Received a different data format with a 'timestamp' key. Skipping processing.")
+                return
+
+            # --- Step 2: Prepare database objects without committing ---
+            
+            # Create the general reading record.
             new_reading = dbReading(
                 DateTime=formatted_ts,
-                Energy=content.get('HourlyEnergy'),
                 Power=content.get('Power'),
                 Ampere=content.get('Current'),
                 Voltage=content.get('Voltage'),
@@ -109,35 +121,41 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
                 Co2_cost=content.get('TotalCost')
             )
             db.session.add(new_reading)
+            print(f"Prepared dbReading for {formatted_ts} UTC.")
+
+            # Handle the hourly energy record.
+            new_energy_value = content.get('HourlyEnergy')
+            if new_energy_value is not None:
+                # Check if a record for this specific hour already exists.
+                existing_energy_reading = dbEnergy.query.filter_by(DateTime=formatted_ts).first()
+
+                if existing_energy_reading:
+                    # If a record exists, update it only if the new energy value is higher.
+                    # This is useful for tracking the maximum energy value within the interval.
+                    if new_energy_value > (existing_energy_reading.Energy or 0):
+                        print(f"Updating max energy for {formatted_ts}. Old: {existing_energy_reading.Energy}, New: {new_energy_value}")
+                        existing_energy_reading.Energy = new_energy_value
+                        # No need to call db.session.add() on an existing object.
+                else:
+                    # If no record exists for this hour, create a new one.
+                    print(f"Creating first energy record for hour {formatted_ts} with Energy: {new_energy_value}")
+                    new_energy_record = dbEnergy(
+                        DateTime=formatted_ts,
+                        Energy=new_energy_value,
+                    )
+                    db.session.add(new_energy_record)
+
+            # --- Step 3: Commit the transaction ---
+            # All changes (adds and updates) are saved to the database in one atomic operation.
             db.session.commit()
-            print(f"Stored: Data for {formatted_ts} UTC")
-
-            new_energy = content.get('HourlyEnergy')
-
-            if new_energy is None:
-                return # Exit if there is no energy value in the data
-
-            # Check if a record for this specific hour already exists in the database.
-            existing_reading = dbEnergy.query.filter_by(DateTime=formatted_ts).first()
-
-            if existing_reading:
-                # If a record exists, we only update it if the new energy value is higher.
-                if new_energy > (existing_reading.Energy or 0):
-                    print(f"Update: New max energy for {formatted_ts}. Old: {existing_reading.Energy}, New: {new_energy}")
-                    existing_reading.Energy = new_energy
-                    db.session.commit()
-            else:
-                # If no record exists for this hour, we create a new one.
-                print(f"Store: Creating first record for hour {formatted_ts} with Energy: {new_energy}")
-                new_reading = dbReading(
-                    Energy=new_energy,
-                )
-                db.session.add(new_reading)
-                db.session.commit()
+            print(f"Successfully committed data for {formatted_ts} UTC.")
 
         except Exception as e:
+            # If any error occurs during the process, roll back all changes.
+            # This prevents partial data from being saved.
             db.session.rollback()
-            print(f"Store Error during Antares/DB operation for {formatted_ts} UTC: {e}")
+            print(f"Store Error during Antares/DB operation for {formatted_ts} UTC. Transaction rolled back. Error: {e}")
+
 
 def background_ntp_checker():
     print("Background NTP Checker started...")
