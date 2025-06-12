@@ -69,7 +69,7 @@ def create_app():
     # --- Routes ---
     @app.route('/')
     def home():
-        return redirect(url_for('unified_view', metric='hourly_energy', granularity='daily'))
+        return redirect(url_for('unified_view', metric='power', granularity='daily'))
 
     @app.route('/view/<string:metric>/<string:granularity>')
     def unified_view(metric, granularity):
