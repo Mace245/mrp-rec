@@ -72,61 +72,45 @@ def get_ntp_time(server="pool.ntp.org"):
     finally:
         if client: client.close()
 
-def fetch_and_store_hourly_data(target_dt_utc: datetime):
-    """
-    Fetches data and stores/updates the MAXIMUM hourly energy value.
-    This ensures only one record per hour exists, holding the peak reading.
-    """
+def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
     with app.app_context():
-        # Set the time to the beginning of the hour (e.g., 14:32 becomes 14:00:00)
-        # This is how we group all readings for that hour into a single record.
-        target_hour_start_utc = target_dt_utc.replace(minute=0, second=0, microsecond=0)
-        formatted_ts_hour = target_hour_start_utc.strftime('%Y-%m-%d %H:00:00')
+        # Store data at the exact interval, not just the top of the hour
+        formatted_ts = target_hour_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+
+        if dbReading.query.filter_by(DateTime=formatted_ts).first():
+            # print(f"Store: Data for {formatted_ts} UTC already exists. Skipping.")
+            return
 
         try:
             antares.setAccessKey(ANTARES_ACCESS_KEY)
             latest_data = antares.get(ANTARES_PROJECT_NAME, ANTARES_DEVICE_NAME)
 
             if not latest_data or 'content' not in latest_data:
-                return # Exit if Antares data is invalid
+                print(f"Store Error: Invalid or empty data received from Antares near {formatted_ts} UTC.")
+                return
 
             content = latest_data['content']
-            new_energy = content.get('HourlyEnergy')
 
-            if new_energy is None:
-                return # Exit if there is no energy value in the data
-
-            # Check if a record for this specific hour already exists in the database.
-            existing_reading = dbReading.query.filter_by(DateTime=formatted_ts_hour).first()
-
-            if existing_reading:
-                # If a record exists, we only update it if the new energy value is higher.
-                if new_energy > (existing_reading.Energy or 0):
-                    print(f"Update: New max energy for {formatted_ts_hour}. Old: {existing_reading.Energy}, New: {new_energy}")
-                    existing_reading.Energy = new_energy
-                    # Also update other metrics to reflect the state at the time of the new max.
-                    existing_reading.Power = content.get('Power')
-                    existing_reading.Ampere = content.get('Current')
-                    existing_reading.Voltage = content.get('Voltage')
-                    db.session.commit()
-            else:
-                # If no record exists for this hour, we create a new one.
-                print(f"Store: Creating first record for hour {formatted_ts_hour} with Energy: {new_energy}")
-                new_reading = dbReading(
-                    DateTime=formatted_ts_hour,
-                    Energy=new_energy,
-                    Power=content.get('Power'),
-                    Ampere=content.get('Current'),
-                    Voltage=content.get('Voltage'),
-                    Co2=content.get('TotalCO2'),
-                    Co2_cost=content.get('TotalCost')
-                )
-                db.session.add(new_reading)
-                db.session.commit()
+            if content.get('timestamp'):
+                print('diff format')
+                return
+            
+            new_reading = dbReading(
+                DateTime=formatted_ts,
+                Energy=content.get('HourlyEnergy'),
+                Power=content.get('Power'),
+                Ampere=content.get('Current'),
+                Voltage=content.get('Voltage'),
+                Co2=content.get('TotalCO2'),
+                Co2_cost=content.get('TotalCost')
+            )
+            db.session.add(new_reading)
+            db.session.commit()
+            print(f"Stored: Data for {formatted_ts} UTC")
 
         except Exception as e:
             db.session.rollback()
-            print(f"Store Error during DB operation for hour {formatted_ts_hour}: {e}")
+            print(f"Store Error during Antares/DB operation for {formatted_ts} UTC: {e}")
 
 def background_ntp_checker():
     print("Background NTP Checker started...")
@@ -136,7 +120,7 @@ def background_ntp_checker():
         if current_ntp_time_utc is not None:
             current_time_jakarta = current_ntp_time_utc.astimezone(jakarta_tz)
             # Now you can use the Jakarta time to fetch data
-            fetch_and_store_hourly_data(target_dt_utc=current_time_jakarta)
+            fetch_and_store_hourly_data(target_hour_dt_utc=current_time_jakarta)
             time.sleep(CHECK_INTERVAL_SECONDS)
 
 # --- Refactored Web Routes ---
