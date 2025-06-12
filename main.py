@@ -40,12 +40,16 @@ app.jinja_env.globals['now'] = datetime.utcnow # For footer timestamp
 class dbReading(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     DateTime = db.Column(db.String(19), nullable=False, unique=True, index=True)
-    Energy = db.Column(db.Float) 
     Power = db.Column(db.Float, nullable=True)
     Ampere = db.Column(db.Float, nullable=True)
     Voltage = db.Column(db.Float, nullable=True)
     Co2 = db.Column(db.Float, nullable=True)
     Co2_cost = db.Column(db.Float, nullable=True)
+
+class dbEnergy(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    DateTime = db.Column(db.String(19), nullable=False, unique=True, index=True)
+    Energy = db.Column(db.Float) 
 
 # --- Data Fetching Logic (Largely Unchanged) ---
 def get_ntp_time(server="pool.ntp.org"):
@@ -97,7 +101,7 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
             
             new_reading = dbReading(
                 DateTime=formatted_ts,
-                Energy=content.get('Energy'),
+                Energy=content.get('HourlyEnergy'),
                 Power=content.get('Power'),
                 Ampere=content.get('Current'),
                 Voltage=content.get('Voltage'),
@@ -107,6 +111,29 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
             db.session.add(new_reading)
             db.session.commit()
             print(f"Stored: Data for {formatted_ts} UTC")
+
+            new_energy = content.get('HourlyEnergy')
+
+            if new_energy is None:
+                return # Exit if there is no energy value in the data
+
+            # Check if a record for this specific hour already exists in the database.
+            existing_reading = dbEnergy.query.filter_by(DateTime=formatted_ts).first()
+
+            if existing_reading:
+                # If a record exists, we only update it if the new energy value is higher.
+                if new_energy > (existing_reading.Energy or 0):
+                    print(f"Update: New max energy for {formatted_ts}. Old: {existing_reading.Energy}, New: {new_energy}")
+                    existing_reading.Energy = new_energy
+                    db.session.commit()
+            else:
+                # If no record exists for this hour, we create a new one.
+                print(f"Store: Creating first record for hour {formatted_ts} with Energy: {new_energy}")
+                new_reading = dbReading(
+                    Energy=new_energy,
+                )
+                db.session.add(new_reading)
+                db.session.commit()
 
         except Exception as e:
             db.session.rollback()
@@ -127,7 +154,7 @@ def background_ntp_checker():
 
 # Dictionary to map URL metric names to database columns and units
 METRIC_CONFIG = {
-    'energy': {'column': dbReading.Energy, 'unit': 'Wh'},
+    'energy': {'column': dbEnergy.Energy, 'unit': 'Wh'},
     'power': {'column': dbReading.Power, 'unit': 'W'},
     'ampere': {'column': dbReading.Ampere, 'unit': 'A'},
     'voltage': {'column': dbReading.Voltage, 'unit': 'V'},
@@ -155,13 +182,23 @@ def unified_view(metric, granularity):
     query = db.session.query(metric_column)
     
     # --- Data Aggregation ---
-    if granularity == 'hourly':
+    if granularity == 'all':
         # For hourly, we just take the raw data points
         query = db.session.query(
             dbReading.DateTime,
             metric_column
         ).order_by(dbReading.DateTime.asc())
         results = query.all()
+
+    elif granularity == 'hourly':
+        # Group by hour and average the values
+        # The format '%Y-%m-%d %H' truncates the timestamp to the hour
+        query = db.session.query(
+            func.strftime('%Y-%m-%d %H:00', dbEnergy.DateTime).label('hour'),
+            func.avg(metric_column).label('value')
+        ).group_by('hour').order_by('hour')
+        results = query.all()
+
         
     elif granularity == 'daily':
         # Group by day and average the values
