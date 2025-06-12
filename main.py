@@ -15,7 +15,7 @@ ANTARES_ACCESS_KEY = 'fe5c7a15d8c13220:bfd764392a99a094' # Your Antares Key
 ANTARES_PROJECT_NAME = 'TADKT-1' # Your Antares Project
 ANTARES_DEVICE_NAME = 'PMM' # Your Antares Device
 DATABASE_FILE = 'mrp.db' # Renamed DB file
-CHECK_INTERVAL_SECONDS = 15 # How often to check for new hour
+CHECK_INTERVAL_SECONDS = 2 # How often to RETRY within the fetch window
 NTP_SERVER = 'pool.ntp.org' # For reliable time checks
 
 app = Flask(__name__)
@@ -40,18 +40,14 @@ app.jinja_env.globals['now'] = datetime.utcnow # For footer timestamp
 class dbReading(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     DateTime = db.Column(db.String(19), nullable=False, unique=True, index=True)
+    Energy = db.Column(db.Float) 
     Power = db.Column(db.Float, nullable=True)
     Ampere = db.Column(db.Float, nullable=True)
     Voltage = db.Column(db.Float, nullable=True)
     Co2 = db.Column(db.Float, nullable=True)
     Co2_cost = db.Column(db.Float, nullable=True)
 
-class dbEnergy(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    DateTime = db.Column(db.String(19), nullable=False, unique=True, index=True)
-    Energy = db.Column(db.Float) 
-
-# --- Data Fetching Logic (Largely Unchanged) ---
+# --- Data Fetching Logic (Modified) ---
 def get_ntp_time(server="pool.ntp.org"):
     """Gets current UTC time from an NTP server."""
     NTP_PORT, NTP_PACKET_FORMAT, NTP_DELTA = 123, "!12I", 2208988800
@@ -76,44 +72,37 @@ def get_ntp_time(server="pool.ntp.org"):
     finally:
         if client: client.close()
 
-def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
+def fetch_and_store_hourly_data(target_hour_dt_utc: datetime) -> bool:
     """
-    Fetches the latest data from an Antares device, and stores power readings and 
-    energy consumption in the database for a specific timestamp.
-
-    This function ensures that each operation is part of a single atomic database transaction.
+    Fetches data from Antares and stores it.
+    Returns True on success, False on failure.
     """
     with app.app_context():
-        # Store data at the exact interval, not just the top of the hour.
-        # The timestamp format includes seconds to capture the precise moment.
         formatted_ts = target_hour_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Check if a reading for this exact timestamp already exists to prevent duplicates.
+        # This check is a safeguard, but the main loop logic should prevent duplicates.
         if dbReading.query.filter_by(DateTime=formatted_ts).first():
-            print(f"Data for {formatted_ts} UTC already exists. Skipping.")
-            return
+            print(f"Store Warning: Data for {formatted_ts} UTC already exists. Skipping.")
+            return False
 
         try:
-            # --- Step 1: Fetch data from the external API ---
             antares.setAccessKey(ANTARES_ACCESS_KEY)
             latest_data = antares.get(ANTARES_PROJECT_NAME, ANTARES_DEVICE_NAME)
 
             if not latest_data or 'content' not in latest_data:
                 print(f"Store Error: Invalid or empty data received from Antares near {formatted_ts} UTC.")
-                return
+                return False
 
             content = latest_data['content']
             
-            # This check seems to be for handling a different data format.
-            if content.get('timestamp'):
-                print("Received a different data format with a 'timestamp' key. Skipping processing.")
-                return
+            # Basic check to ensure we have some expected data
+            if content.get('Power') is None:
+                print(f"Store Error: 'Power' data is missing in the payload from Antares.")
+                return False
 
-            # --- Step 2: Prepare database objects without committing ---
-            
-            # Create the general reading record.
             new_reading = dbReading(
                 DateTime=formatted_ts,
+                Energy=content.get('Energy'),
                 Power=content.get('Power'),
                 Ampere=content.get('Current'),
                 Voltage=content.get('Voltage'),
@@ -121,58 +110,92 @@ def fetch_and_store_hourly_data(target_hour_dt_utc: datetime):
                 Co2_cost=content.get('TotalCost')
             )
             db.session.add(new_reading)
-            print(f"Prepared dbReading for {formatted_ts} UTC.")
-
-            # Handle the hourly energy record.
-            new_energy_value = content.get('HourlyEnergy')
-            if new_energy_value is not None:
-                # Check if a record for this specific hour already exists.
-                existing_energy_reading = dbEnergy.query.filter_by(DateTime=formatted_ts).first()
-
-                if existing_energy_reading:
-                    # If a record exists, update it only if the new energy value is higher.
-                    # This is useful for tracking the maximum energy value within the interval.
-                    if new_energy_value > (existing_energy_reading.Energy or 0):
-                        print(f"Updating max energy for {formatted_ts}. Old: {existing_energy_reading.Energy}, New: {new_energy_value}")
-                        existing_energy_reading.Energy = new_energy_value
-                        # No need to call db.session.add() on an existing object.
-                else:
-                    # If no record exists for this hour, create a new one.
-                    print(f"Creating first energy record for hour {formatted_ts} with Energy: {new_energy_value}")
-                    new_energy_record = dbEnergy(
-                        DateTime=formatted_ts,
-                        Energy=new_energy_value,
-                    )
-                    db.session.add(new_energy_record)
-
-            # --- Step 3: Commit the transaction ---
-            # All changes (adds and updates) are saved to the database in one atomic operation.
             db.session.commit()
-            print(f"Successfully committed data for {formatted_ts} UTC.")
+            print(f"SUCCESS: Stored data for {formatted_ts} UTC")
+            return True
 
         except Exception as e:
-            # If any error occurs during the process, roll back all changes.
-            # This prevents partial data from being saved.
             db.session.rollback()
-            print(f"Store Error during Antares/DB operation for {formatted_ts} UTC. Transaction rolled back. Error: {e}")
-
+            print(f"Store Error during Antares/DB operation for {formatted_ts} UTC: {e}")
+            return False
 
 def background_ntp_checker():
-    print("Background NTP Checker started...")
-    jakarta_tz = ZoneInfo('Asia/Jakarta')
-    while True:
-        current_ntp_time_utc = get_ntp_time(NTP_SERVER)
-        if current_ntp_time_utc is not None:
-            current_time_jakarta = current_ntp_time_utc.astimezone(jakarta_tz)
-            # Now you can use the Jakarta time to fetch data
-            fetch_and_store_hourly_data(target_hour_dt_utc=current_time_jakarta)
-            time.sleep(CHECK_INTERVAL_SECONDS)
+    """
+    Checks the time and triggers a data fetch only during the last 5 minutes
+    of every hour (e.g., from HH:55:00 to HH:59:59).
+    """
+    print("Background Checker started: Will fetch data in the last 5 minutes of each hour.")
+    # Use a variable to track the last hour we successfully fetched data for.
+    # Initialize to a value that will never match a real hour.
+    last_successful_fetch_hour_utc = -1
 
-# --- Refactored Web Routes ---
+    while True:
+        # 1. Get a reliable UTC timestamp
+        now_utc = get_ntp_time(NTP_SERVER)
+        if not now_utc:
+            print("NTP Error: Could not get time. Retrying in 60 seconds.")
+            time.sleep(60)
+            continue # Restart the loop
+
+        current_hour = now_utc.hour
+        current_minute = now_utc.minute
+
+        # 2. Determine if we are allowed to fetch in the current hour
+        has_fetched_this_hour = (current_hour == last_successful_fetch_hour_utc)
+
+        # 3. Check if we are inside the fetch window (minutes 55-59)
+        is_in_fetch_window = current_minute >= 55
+
+        # 4. DECISION LOGIC: Fetch or Sleep?
+        if is_in_fetch_window and not has_fetched_this_hour:
+            # --- ATTEMPT TO FETCH ---
+            # We are in the window and haven't successfully fetched for this hour yet.
+            print(f"UTC {now_utc.strftime('%H:%M:%S')}: In fetch window. Attempting data retrieval.")
+
+            was_successful = fetch_and_store_hourly_data(target_hour_dt_utc=now_utc)
+
+            if was_successful:
+                # On success, lock this hour and wait until the next hour's window.
+                last_successful_fetch_hour_utc = current_hour
+                print(f"Success for hour {current_hour}. Waiting for next hour's window.")
+                # Sleep for ~55 minutes to completely miss the rest of this hour's window.
+                time.sleep(55 * 60) 
+            else:
+                # On failure, wait a short interval and retry (the loop will come back here).
+                print(f"Fetch failed. Retrying in {CHECK_INTERVAL_SECONDS} seconds.")
+                time.sleep(CHECK_INTERVAL_SECONDS)
+        else:
+            # --- SLEEP UNTIL NEXT WINDOW ---
+            # This block runs if:
+            # a) It's NOT the fetch window (minute < 55)
+            # b) We have ALREADY fetched for this hour.
+
+            wait_seconds = 0
+            # Calculate how many seconds to sleep until the next HH:55:00
+            if current_minute < 55:
+                # It's before the window, so wait until this hour's window starts.
+                wait_seconds = (54 - current_minute) * 60 + (60 - now_utc.second)
+            else:
+                # It's after the window has started, but we've already fetched.
+                # We need to wait for the *next* hour's window.
+                seconds_remaining_in_hour = (59 - current_minute) * 60 + (60 - now_utc.second)
+                wait_seconds = seconds_remaining_in_hour + (55 * 60)
+
+            # Add a small buffer to ensure we land inside the window, not right at the edge.
+            wait_seconds += 2
+            
+            next_fetch_time = now_utc + timedelta(seconds=wait_seconds)
+            print(f"UTC {now_utc.strftime('%H:%M:%S')}: Not in fetch window or already completed. "
+                  f"Sleeping for ~{round(wait_seconds / 60, 1)} minutes until {next_fetch_time.strftime('%Y-%m-%d %H:%M')}.")
+            
+            time.sleep(wait_seconds)
+
+
+# --- Refactored Web Routes (Unchanged) ---
 
 # Dictionary to map URL metric names to database columns and units
 METRIC_CONFIG = {
-    'energy': {'column': dbEnergy.Energy, 'unit': 'Wh'},
+    'energy': {'column': dbReading.Energy, 'unit': 'Wh'},
     'power': {'column': dbReading.Power, 'unit': 'W'},
     'ampere': {'column': dbReading.Ampere, 'unit': 'A'},
     'voltage': {'column': dbReading.Voltage, 'unit': 'V'},
@@ -200,23 +223,13 @@ def unified_view(metric, granularity):
     query = db.session.query(metric_column)
     
     # --- Data Aggregation ---
-    if granularity == 'all':
+    if granularity == 'hourly':
         # For hourly, we just take the raw data points
         query = db.session.query(
             dbReading.DateTime,
             metric_column
         ).order_by(dbReading.DateTime.asc())
         results = query.all()
-
-    elif granularity == 'hourly':
-        # Group by hour and average the values
-        # The format '%Y-%m-%d %H' truncates the timestamp to the hour
-        query = db.session.query(
-            func.strftime('%Y-%m-%d %H:00', dbEnergy.DateTime).label('hour'),
-            func.avg(metric_column).label('value')
-        ).group_by('hour').order_by('hour')
-        results = query.all()
-
         
     elif granularity == 'daily':
         # Group by day and average the values
