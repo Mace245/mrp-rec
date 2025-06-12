@@ -190,14 +190,14 @@ def unified_view(metric, granularity):
         ).order_by(dbReading.DateTime.asc())
         results = query.all()
 
-    elif granularity == 'hourly':
-        # Group by hour and average the values
-        # The format '%Y-%m-%d %H' truncates the timestamp to the hour
-        query = db.session.query(
-            func.strftime('%Y-%m-%d %H:00', dbEnergy.DateTime).label('hour'),
-            func.avg(metric_column).label('value')
-        ).group_by('hour').order_by('hour')
-        results = query.all()
+    # elif granularity == 'hourly':
+    #     # Group by hour and average the values
+    #     # The format '%Y-%m-%d %H' truncates the timestamp to the hour
+    #     query = db.session.query(
+    #         func.strftime('%Y-%m-%d %H:00', dbEnergy.DateTime).label('hour'),
+    #         func.avg(metric_column).label('value')
+    #     ).group_by('hour').order_by('hour')
+    #     results = query.all()
 
         
     elif granularity == 'daily':
